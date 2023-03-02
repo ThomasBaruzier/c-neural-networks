@@ -2,6 +2,8 @@
 #include <stdlib.h>
 #include <math.h>
 
+#define DEBUG
+
 #define sigmoid(x) (1 / (1 + exp(-x)))
 #define dSigmoid(x) (x * (1 - x))
 #define relu(x) ((x > 0) ? x : 0)
@@ -30,7 +32,7 @@ struct Neurons {
 };
 
 int detectMode(char *path);
-int countNeurons(char *set);
+int countNeurons(char *set, int pos);
 int loadData(FILE *fp, struct Dataset *ds, struct HyperParams *hp);
 
 int main(int argc, char **argv)
@@ -48,7 +50,7 @@ int main(int argc, char **argv)
   }
 
   if (detectMode(path)) {
-    printf("Training using %s\n", path);
+    printf("\nTraining using %s\n\n", path);
 
     struct Dataset ds;
     struct HyperParams hp;
@@ -76,68 +78,92 @@ int detectMode(char *path) {
   }
 }
 
-int countNeurons(char *set) {
-  int i=0, neurons=1;
-  while(set[i] != '\0') {
-    if (set[i] == ',') neurons++;
-    i++;
+int countNeurons(char *set, int pos) {
+  int neurons=1;
+  for (; set[pos] != ' ' && set[pos] != '\0'; pos++) {
+    if (set[pos] == ',') neurons++;
   }
   return neurons;
 }
 
 // TO DO
-// reduce alloc calls
-// handle fread chunks
-// resize inputs/outputs dynamically
+// Fix allocations issues (random garbage values from time to time)
 int loadData(FILE *fp, struct Dataset *ds, struct HyperParams *hp) {
   char buffer[1024*1024], tmp[8];
-  int numNeurons, flag=0;
-  int i=0, j=0, k=0, l=0, x=0;
-
-  // allocate ds->inputs
-  fscanf(fp, "%s", buffer);
-  numNeurons = countNeurons(buffer);
-  ds->inputs = (float **) malloc(1000 * sizeof(float *));
-  for (int i = 0; i < 1000; i++)
-    ds->inputs[i] = (float *) malloc(numNeurons * sizeof(float));
-
+  float *inputData = NULL, *outputData = NULL;
+  int numNeuronsIn, numNeuronsOut, arraySize = 1024;
+  int i, line=0, set=0, value=0, step=0;
+  ds->inputs = (float **) malloc(arraySize * sizeof(float *));
+  ds->outputs = (float **) malloc(arraySize * sizeof(float *));
 
   while (fread(buffer, 1, 1024*1024, fp) > 0) {
-    for (int i=0; j < 2 && buffer[i] != '\0'; i++) {
+    for (int pos=0; line < 2 && buffer[pos] != '\0'; pos++) {
 
-      // allocate ds->outputs
-      if (flag) {
-        flag = 0;
-        fscanf(fp, "%s", buffer);
-        numNeurons = countNeurons(buffer);
-        ds->outputs = (float **) malloc(1000 * sizeof(float *));
-        for (int i = 0; i < 1000; i++)
-          ds->outputs[i] = (float *) malloc(numNeurons * sizeof(float));
+      // dynamic allocation based on set sizes
+      if (step == 0) {
+        numNeuronsIn = countNeurons(buffer, 0);
+        inputData = (float *) realloc(inputData, arraySize * numNeuronsIn * sizeof(float));
+        step = -1;
+      } else if (step == 1) {
+        arraySize = 1024;
+        numNeuronsOut = countNeurons(buffer, pos);
+        outputData = (float *) realloc(outputData, arraySize * numNeuronsOut * sizeof(float));
+        step = -1;
       }
 
       // parsing doubles
-      for (x=0; x < 8; x++) tmp[x] = '\0'; x=0;
-      while ((buffer[i] >= '0' && buffer[i] <= '9') || buffer[i] == '.') {
-        tmp[x] = buffer[i]; i++; x++;
+      for (i=0; i < 8; i++) tmp[i] = '\0'; i=0;
+      while ((buffer[pos] >= '0' && buffer[pos] <= '9') || buffer[pos] == '.') {
+        tmp[i] = buffer[pos]; pos++; i++;
       }
 
       // assigning values
-      if (j == 0) ds->inputs[k][l] = atof(tmp);
-      else ds->outputs[k][l] = atof(tmp);
-      if (j == 0) printf("inputs[%d][%d]=%f\n", k, l, ds->inputs[k][l]);
-      else printf("outputs[%d][%d]=%f\n", k, l, ds->outputs[k][l]);;
+      if (line == 0)  {
+        // reallocate inputs
+        if (set == arraySize) {
+          arraySize *= 2;
+          ds->inputs = (float **) realloc(ds->inputs, arraySize * sizeof(float *));
+          inputData = (float *) realloc(inputData, arraySize * numNeuronsIn * sizeof(float));
+        }
+
+        ds->inputs[set] = inputData + set * numNeuronsIn;
+        ds->inputs[set][value] = atof(tmp);
+        #ifdef DEBUG
+          printf("inputs[%d][%d]=%f\n", set, value, ds->inputs[set][value]);
+        #endif
+      } else if (line == 1) {
+        // reallocate outputs
+        if (set == arraySize) {
+          arraySize *= 2;
+          ds->outputs = (float **) realloc(ds->outputs, arraySize * sizeof(float *));
+          outputData = (float *) realloc(outputData, arraySize * numNeuronsOut * sizeof(float));
+        }
+
+        ds->outputs[set] = outputData + set * numNeuronsOut;
+        ds->outputs[set][value] = atof(tmp);
+        #ifdef DEBUG
+          printf("outputs[%d][%d]=%f\n", set, value, ds->inputs[set][value]);
+        #endif
+      }
 
       // handle separators and counters
-      if (buffer[i] == ',') { l++; }
-      else if (buffer[i] == ' ') { k++; l=0; }
-      else if (buffer[i] == '\n' || buffer[i] == '\0') {
-        if (j == 0) { hp->numInputs = l+1; flag=1; }
-        if (j == 1) { hp->numOutputs = l+1; hp->numSets = k+1; }
-        j++; k=0; l=0;
+      if (buffer[pos] == ',') { value++; }
+      else if (buffer[pos] == ' ') { set++; value=0; }
+      else if (buffer[pos] == '\n' || buffer[pos] == '\0') {
+        if (line == 0) { hp->numInputs = value+1; step = 1; }
+        if (line == 1) { hp->numOutputs = value+1; hp->numSets = set+1; }
+        line++; set = 0; value = 0;
       }
     }
   }
 
+  #ifdef DEBUG
+    printf("\nnumInputs = %d\n", hp->numInputs);
+    printf("numOutputs = %d\n", hp->numOutputs);
+    printf("numSets = %d\n\n", hp->numSets);
+  #endif
+
   return 0;
 }
 
+//printf("char : %c | pos : %d | number : %f | line : %d | set : %d | value : %d\n", buffer[pos], pos, atof(tmp), line, set, value);
